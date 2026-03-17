@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    
+    <link rel="manifest" href="manifest.json">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="theme-color" content="#00ff88">
+
+    <title>LAST WAR: REALISTIC ELITE</title>
+    <style>
+        :root { --blue: #007bff; --green: #00ff88; --red: #ff3333; --white: #ffffff; }
+        body { margin: 0; overflow: hidden; background: var(--white); font-family: 'Segoe UI', sans-serif; }
+        
+        #ui { position: fixed; top: 20px; width: 100%; display: flex; flex-direction: column; align-items: center; pointer-events: none; z-index: 10; gap: 10px; }
+        .stat-row { display: flex; gap: 10px; }
+        .stat { background: rgba(0,0,0,0.9); color: var(--white); padding: 8px 15px; border-radius: 8px; border: 1px solid var(--green); font-weight: bold; font-size: 14px; }
+        
+        #hp-bar-container { width: 220px; height: 12px; background: #ddd; border-radius: 6px; overflow: hidden; border: 2px solid black; }
+        #hp-fill { width: 100%; height: 100%; background: var(--green); transition: 0.3s; }
+
+        #shop-menu {
+            position: fixed; inset: 0; background: rgba(255,255,255,0.98);
+            display: none; flex-direction: column; justify-content: center; align-items: center; z-index: 100;
+        }
+        .shop-grid { display: grid; grid-template-columns: 1fr; gap: 10px; width: 90%; }
+        .shop-item { background: #f0f0f0; border: 2px solid var(--blue); padding: 15px; border-radius: 12px; text-align: center; color: black; }
+        .btn { background: var(--green); color: black; border: none; padding: 12px; border-radius: 25px; font-weight: bold; cursor: pointer; width: 100%; margin-top: 10px; font-size: 16px; }
+    </style>
+</head>
+<body>
+
+    <div id="ui">
+        <div id="hp-bar-container"><div id="hp-fill"></div></div>
+        <div class="stat-row">
+            <div class="stat">ARMY: <span id="squad-val">1</span></div>
+            <div class="stat">CASH: $<span id="money-val">0</span></div>
+            <button class="stat" style="pointer-events: auto; background: var(--blue);" onclick="toggleShop(true)">SHOP</button>
+        </div>
+    </div>
+
+    <div id="shop-menu">
+        <h1 style="color: black; margin-bottom: 20px;">REINFORCEMENTS</h1>
+        <div class="shop-grid">
+            <div class="shop-item"><h3>SQUAD</h3><p>+100 Elite Soldiers</p><button class="btn" onclick="buySoldiers(100, 5000)">BUY $5,000</button></div>
+            <div class="shop-item"><h3>ARMY</h3><p>+500 Elite Soldiers</p><button class="btn" onclick="buySoldiers(500, 20000)">BUY $20,000</button></div>
+            <div class="shop-item"><h3>WAR</h3><p>+1000 Elite Soldiers</p><button class="btn" onclick="buySoldiers(1000, 45000)">BUY $45,000</button></div>
+        </div>
+        <button class="btn" style="background: #000; color: white; width: auto; padding: 10px 50px;" onclick="toggleShop(false)">RESUME</button>
+    </div>
+
+    <script type="importmap"> { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } } </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        let scene, camera, renderer, squad = [], bullets = [], enemies = [], gates = [];
+        let money = 0, health = 100, gameActive = true, playerX = 0, speed = 0.32, clock = new THREE.Clock();
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0xffffff);
+            scene.fog = new THREE.Fog(0xffffff, 20, 65);
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 10, 16);
+            camera.lookAt(0, 0, -10);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            document.body.appendChild(renderer.domElement);
+
+            const floor = new THREE.Mesh(new THREE.PlaneGeometry(25, 20000), new THREE.MeshPhongMaterial({ color: 0xf0f0f0 }));
+            floor.rotation.x = -Math.PI / 2;
+            floor.receiveShadow = true;
+            scene.add(floor);
+
+            scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+            const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+            sun.position.set(10, 20, 10);
+            sun.castShadow = true;
+            scene.add(sun);
+
+            spawnSoldier(0, -10, false);
+            
+            setInterval(() => { if(gameActive) autoShoot(); }, 200);
+            setInterval(() => { if(gameActive) spawnEnemyWave(); }, 1700);
+            setInterval(() => { if(gameActive) spawnGate(); }, 4500);
+
+            window.addEventListener('touchmove', (e) => {
+                playerX = ((e.touches[0].clientX / window.innerWidth) * 2 - 1) * 7.5;
+            });
+        }
+
+        // --- HIGH-FIDELITY 3D SOLDIER ---
+        function createSoldierMesh(isEnemy) {
+            const group = new THREE.Group();
+            const skinColor = isEnemy ? 0xcc3333 : 0xddccbb;
+            const gearColor = isEnemy ? 0x440000 : 0x224422;
+
+            // Legs
+            const legGeo = new THREE.CapsuleGeometry(0.08, 0.3, 4, 8);
+            const legMat = new THREE.MeshPhongMaterial({ color: gearColor });
+            const lLeg = new THREE.Mesh(legGeo, legMat); lLeg.position.set(-0.12, 0.15, 0);
+            const rLeg = new THREE.Mesh(legGeo, legMat); rLeg.position.set(0.12, 0.15, 0);
+
+            // Torso (Vested)
+            const body = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.5, 0.25), new THREE.MeshPhongMaterial({ color: gearColor }));
+            body.position.y = 0.55;
+            
+            // Tactical Vest Detail
+            const vest = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.3, 0.28), new THREE.MeshPhongMaterial({ color: 0x111111 }));
+            vest.position.y = 0.55;
+
+            // Head & Helmet
+            const head = new THREE.Mesh(new THREE.SphereGeometry(0.16), new THREE.MeshPhongMaterial({ color: skinColor }));
+            head.position.y = 0.9;
+            const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.18, 8, 8, 0, Math.PI * 2, 0, Math.PI / 1.8), new THREE.MeshPhongMaterial({ color: 0x222222 }));
+            helmet.position.y = 0.92;
+
+            // Arms holding weapon
+            const armGeo = new THREE.CapsuleGeometry(0.06, 0.35, 4, 8);
+            const lArm = new THREE.Mesh(armGeo, new THREE.MeshPhongMaterial({ color: skinColor }));
+            lArm.position.set(-0.22, 0.65, 0.1); lArm.rotation.x = -Math.PI/3;
+            const rArm = new THREE.Mesh(armGeo, new THREE.MeshPhongMaterial({ color: skinColor }));
+            rArm.position.set(0.22, 0.65, 0.1); rArm.rotation.x = -Math.PI/3;
+
+            group.add(lLeg, rLeg, body, vest, head, helmet, lArm, rArm);
+            group.castShadow = true;
+            return group;
+        }
+
+        function spawnSoldier(x, z, isEnemy) {
+            const s = createSoldierMesh(isEnemy);
+            s.position.set(x, 0, z);
+            scene.add(s);
+            if(isEnemy) enemies.push(s); else squad.push(s);
+            updateUI();
+        }
+
+        function spawnEnemyWave() {
+            const count = 5 + Math.floor(speed * 7);
+            for(let i=0; i<count; i++) {
+                spawnSoldier(Math.random() * 14 - 7, camera.position.z - 75, true);
+            }
+        }
+
+        function spawnGate() {
+            const group = new THREE.Group();
+            const gateGeo = new THREE.BoxGeometry(4.5, 5, 0.2);
+            const gateMat = new THREE.MeshPhongMaterial({ color: 0x007bff, transparent: true, opacity: 0.4 });
+            const mesh = new THREE.Mesh(gateGeo, gateMat);
+            
+            const p1 = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.3, 0.3), new THREE.MeshBasicMaterial({color: 0xffffff}));
+            const p2 = new THREE.Mesh(new THREE.BoxGeometry(0.3, 1.5, 0.3), new THREE.MeshBasicMaterial({color: 0xffffff}));
+            p1.position.z = 0.2; p2.position.z = 0.2;
+            group.add(mesh, p1, p2);
+
+            group.position.set(Math.random() > 0.5 ? 3.5 : -3.5, 2.5, camera.position.z - 85);
+            scene.add(group);
+            gates.push({ mesh: group, val: 5, hit: false });
+        }
+
+        function autoShoot() {
+            squad.slice(0, 25).forEach((s) => {
+                const b = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.4), new THREE.MeshBasicMaterial({ color: 0x000000 }));
+                b.rotation.x = Math.PI/2;
+                b.position.set(s.position.x, 0.7, s.position.z);
+                scene.add(b);
+                bullets.push(b);
+            });
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            if(!gameActive) return;
+
+            const time = clock.getElapsedTime();
+            camera.position.z -= speed;
+
+            // Realistic Run Bobbing
+            squad.forEach((s, i) => {
+                const targetX = playerX + (i % 8 - 4) * 0.75;
+                const targetZ = camera.position.z - 15 - (Math.floor(i/8) * 1.0);
+                s.position.x += (targetX - s.position.x) * 0.12;
+                s.position.z += (targetZ - s.position.z) * 0.12;
+                s.position.y = Math.abs(Math.sin(time * 10 + i)) * 0.15; // Running animation
+            });
+
+            // Gate Logic
+            gates.forEach((g, gi) => {
+                if(!g.hit && Math.abs(camera.position.z - 15 - g.mesh.position.z) < 1.2) {
+                    if(Math.abs(playerX - g.mesh.position.x) < 2.8) {
+                        g.hit = true;
+                        for(let i=0; i<g.val; i++) spawnSoldier(playerX, camera.position.z - 15, false);
+                        scene.remove(g.mesh);
+                    }
+                }
+            });
+
+            // Enemy & Combat
+            enemies.forEach((e, ei) => {
+                e.position.z += speed * 0.35;
+                e.position.y = Math.abs(Math.sin(time * 8 + ei)) * 0.1; 
+                if(e.position.z > camera.position.z) {
+                    health -= 5;
+                    scene.remove(e); enemies.splice(ei, 1);
+                    updateUI();
+                }
+            });
+
+            bullets.forEach((b, bi) => {
+                b.position.z -= 1.6;
+                enemies.forEach((e, ei) => {
+                    if(b.position.distanceTo(e.position) < 1.1) {
+                        money += 50;
+                        scene.remove(e); enemies.splice(ei, 1);
+                        scene.remove(b); bullets.splice(bi, 1);
+                        updateUI();
+                    }
+                });
+                if(b.position.z < camera.position.z - 95) { scene.remove(b); bullets.splice(bi, 1); }
+            });
+
+            renderer.render(scene, camera);
+        }
+
+        function updateUI() {
+            document.getElementById('squad-val').innerText = squad.length;
+            document.getElementById('money-val').innerText = money.toLocaleString();
+            document.getElementById('hp-fill').style.width = health + "%";
+            if(health <= 0) { gameActive = false; alert("DEFENSES BREACHED!"); location.reload(); }
+        }
+
+        window.toggleShop = (show) => { gameActive = !show; document.getElementById('shop-menu').style.display = show ? 'flex' : 'none'; };
+        window.buySoldiers = (num, cost) => {
+            if(money >= cost) { money -= cost; for(let i=0; i<num; i++) spawnSoldier(playerX, camera.position.z - 16, false); updateUI(); } 
+            else { alert("NEED MORE CASH"); }
+        };
+
+        init();
+        animate();
+    </script>
+</body>
+</html>
